@@ -1,0 +1,19 @@
+# build output
+/bin/
+/dist/
+
+# test + coverage artifacts
+*.out
+*.test
+coverage/
+/tmp/
+
+# local cluster data
+/data/
+*.wal
+*.snap
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
