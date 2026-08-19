@@ -543,3 +543,71 @@ func TestConsensusErrorsMapToStatuses(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsEndpoint(t *testing.T) {
+	h := startHarness(t, 3)
+	base := h.leaderURL()
+	if resp, body := do(t, http.MethodPut, base+"/kv/k", "v"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT = %d: %s", resp.StatusCode, body)
+	}
+
+	resp, body := do(t, http.MethodGet, base+"/metrics", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /metrics = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content type = %q", ct)
+	}
+	for _, want := range []string{
+		"# TYPE raftlite_term gauge",
+		"# TYPE raftlite_proposals_total counter",
+		"raftlite_is_leader{",
+		"raftlite_keys{",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in:\n%s", want, body)
+		}
+	}
+	// Any node serves its own metrics, leader or not.
+	follower := h.followerURL()
+	if resp, _ := doNoRedirect(t, http.MethodGet, follower+"/metrics", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("follower /metrics = %d", resp.StatusCode)
+	}
+}
+
+func TestAWriteIsVisibleInStatusAsSoonAsItReturns(t *testing.T) {
+	// A client that gets a success and immediately asks what the cluster looks
+	// like must not be shown a view that predates its own change. This is
+	// ordering inside the node's event loop, not luck, so it is asserted in a
+	// tight loop rather than with a wait.
+	h := startHarness(t, 3)
+	base := h.leaderURL()
+
+	for i := 0; i < 20; i++ {
+		key := fmt.Sprintf("key-%02d", i)
+		if resp, body := do(t, http.MethodPut, base+"/kv/"+key, "v"); resp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT = %d: %s", resp.StatusCode, body)
+		}
+		_, body := do(t, http.MethodGet, base+"/status", "")
+		var st statusBody
+		if err := json.Unmarshal([]byte(body), &st); err != nil {
+			t.Fatalf("decoding %q: %v", body, err)
+		}
+		if st.Keys != i+1 {
+			t.Fatalf("after write %d the status reported %d keys", i+1, st.Keys)
+		}
+	}
+
+	// The same for membership: add a member and read the list back at once.
+	memberBody, _ := json.Marshal(addMemberRequest{ID: 4, Addr: "mem://4", ClientAddr: "127.0.0.1:1"})
+	resp, out := do(t, http.MethodPost, base+"/members", string(memberBody))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /members = %d: %s", resp.StatusCode, out)
+	}
+	if !strings.Contains(out, `"id":4`) {
+		t.Fatalf("the response to an add did not include the added member: %s", out)
+	}
+	if _, list := do(t, http.MethodGet, base+"/members", ""); !strings.Contains(list, `"id":4`) {
+		t.Fatalf("member list read immediately after the add: %s", list)
+	}
+}

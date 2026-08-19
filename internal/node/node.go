@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sahilkalgutkar/raftlite/internal/fsm"
+	"github.com/sahilkalgutkar/raftlite/internal/metrics"
 	"github.com/sahilkalgutkar/raftlite/internal/raft"
 	"github.com/sahilkalgutkar/raftlite/internal/storage"
 	"github.com/sahilkalgutkar/raftlite/internal/transport"
@@ -55,6 +56,10 @@ type Config struct {
 	// SnapshotThreshold is how many applied entries trigger a snapshot. Zero
 	// disables automatic snapshotting.
 	SnapshotThreshold uint64
+
+	// Metrics is where this node registers its counters and gauges. One is
+	// created if none is supplied, so a node always has somewhere to record.
+	Metrics *metrics.Registry
 
 	// NewTransport builds this node's transport. It is a constructor rather
 	// than a value because the transport needs the node's message handler,
@@ -144,6 +149,10 @@ type Node struct {
 	knownConfig          raft.Config
 	appliedSinceSnapshot uint64
 	bootstrapPending     bool
+
+	metrics        *nodeMetrics
+	registry       *metrics.Registry
+	lastSeenLeader raft.NodeID
 }
 
 // Start recovers a node from disk and begins running it.
@@ -217,6 +226,12 @@ func Start(cfg Config) (*Node, error) {
 	n.tr = tr
 	n.tr.SetPeers(n.knownConfig.Members)
 
+	n.registry = cfg.Metrics
+	if n.registry == nil {
+		n.registry = metrics.NewRegistry()
+	}
+	n.registerMetrics(n.registry)
+
 	go n.run()
 	return n, nil
 }
@@ -261,6 +276,9 @@ func (n *Node) Status() raft.Status {
 
 // Store exposes the state machine for reads.
 func (n *Node) Store() *fsm.KV { return n.kv }
+
+// Metrics returns the registry this node exports through.
+func (n *Node) Metrics() *metrics.Registry { return n.registry }
 
 // IsLeader reports whether this node is currently leading.
 func (n *Node) IsLeader() bool { return n.Status().Role == raft.Leader }

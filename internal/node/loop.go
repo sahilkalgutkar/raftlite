@@ -59,7 +59,9 @@ func (n *Node) startProposal(p *proposal) {
 	} else {
 		index, err = n.raft.Propose(p.entryType, p.data)
 	}
+	n.metrics.proposals.Inc()
 	if err != nil {
+		n.metrics.proposalsFailed.Inc()
 		p.result <- proposalResult{err: err}
 		return
 	}
@@ -72,7 +74,9 @@ func (n *Node) startProposal(p *proposal) {
 func (n *Node) startRead(r *readRequest) {
 	n.nextReadID++
 	id := n.nextReadID
+	n.metrics.reads.Inc()
 	if err := n.raft.ReadIndex(id); err != nil {
+		n.metrics.readsFailed.Inc()
 		r.result <- err
 		return
 	}
@@ -101,12 +105,21 @@ func (n *Node) drainReady() error {
 		for _, m := range rd.Messages {
 			n.tr.Send(m)
 		}
-		n.applyCommitted(rd.CommittedEntries)
+		replies := n.applyCommitted(rd.CommittedEntries)
 		n.confirmReads(rd.ReadStates)
 		n.releaseReads()
 
 		n.reconcileMembership()
+		n.observeLeader(rd.Lead)
 		n.publishStatus()
+
+		// Clients are answered only once the published status reflects what
+		// their write did. Replying first leaves a window where a caller that
+		// adds a member and immediately reads the member list gets a view
+		// that predates its own change.
+		for _, r := range replies {
+			r.proposal.result <- r.result
+		}
 		if err := n.maybeSnapshot(); err != nil {
 			return err
 		}
@@ -129,17 +142,30 @@ func (n *Node) installSnapshot(snap *raft.Snapshot) error {
 		return err
 	}
 	n.appliedSinceSnapshot = 0
+	n.metrics.snapshotsLoaded.Inc()
 	n.cfg.Logger.Info("installed a snapshot from the leader",
 		"id", uint64(n.cfg.ID), "index", snap.Meta.Index, "keys", n.kv.Len())
 	return nil
 }
 
-// applyCommitted hands committed entries to the state machine and wakes up
-// whoever was waiting on them.
-func (n *Node) applyCommitted(entries []raft.Entry) {
+// reply is one client's answer, held back until the node's published state
+// catches up with the entry that produced it.
+type reply struct {
+	proposal *proposal
+	result   proposalResult
+}
+
+// applyCommitted hands committed entries to the state machine and collects the
+// answers owed to whoever was waiting on them.
+func (n *Node) applyCommitted(entries []raft.Entry) []reply {
+	var replies []reply
 	for _, e := range entries {
 		res := n.kv.Apply(e)
 		n.appliedSinceSnapshot++
+		n.metrics.entriesApplied.Inc()
+		if e.Type == raft.EntryConfChange {
+			n.metrics.configChanges.Inc()
+		}
 
 		p, waiting := n.waiters[e.Index]
 		if !waiting {
@@ -150,11 +176,13 @@ func (n *Node) applyCommitted(entries []raft.Entry) {
 		// Same index, different term: a new leader replaced our entry before
 		// it committed. The client's write did not happen.
 		if e.Term != p.term {
-			p.result <- proposalResult{err: ErrLeadershipLost}
+			n.metrics.proposalsFailed.Inc()
+			replies = append(replies, reply{proposal: p, result: proposalResult{err: ErrLeadershipLost}})
 			continue
 		}
-		p.result <- proposalResult{res: res}
+		replies = append(replies, reply{proposal: p, result: proposalResult{res: res}})
 	}
+	return replies
 }
 
 // confirmReads records the index each confirmed read may be served at.
@@ -189,6 +217,7 @@ func (n *Node) failStaleWaiters(role raft.Role) {
 		return
 	}
 	for idx, p := range n.waiters {
+		n.metrics.proposalsFailed.Inc()
 		p.result <- proposalResult{err: ErrLeadershipLost}
 		delete(n.waiters, idx)
 	}
@@ -196,6 +225,7 @@ func (n *Node) failStaleWaiters(role raft.Role) {
 	// stale read ReadIndex exists to prevent, so these fail too and the client
 	// retries against whoever is actually leading.
 	for id, w := range n.reads {
+		n.metrics.readsFailed.Inc()
 		w.result <- ErrLeadershipLost
 		delete(n.reads, id)
 	}
@@ -243,6 +273,7 @@ func (n *Node) maybeSnapshot() error {
 		return err
 	}
 	n.appliedSinceSnapshot = 0
+	n.metrics.snapshotsTaken.Inc()
 	return nil
 }
 
