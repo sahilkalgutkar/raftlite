@@ -137,3 +137,16 @@ func TestDecoderRejectsImplausibleLengths(t *testing.T) {
 		}
 	})
 }
+
+func TestRemainingReportsUnconsumedBytes(t *testing.T) {
+	e := NewEncoder(0)
+	e.Uvarint(1)
+	d := NewDecoder(append(e.Result(), 'x', 'y'))
+	d.Uvarint()
+	if got := string(d.Remaining()); got != "xy" {
+		t.Fatalf("Remaining = %q, want %q", got, "xy")
+	}
+	if d.Done() {
+		t.Fatal("Done reported true with bytes left over")
+	}
+}

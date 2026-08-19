@@ -21,10 +21,11 @@ type Options struct {
 	// comfortably smaller than ElectionTicks.
 	HeartbeatTicks int
 
-	// HardState and Log are the state recovered from disk. Both are zero for a
-	// node starting with nothing.
+	// HardState, Log and Snapshot are the state recovered from disk. All three
+	// are zero for a node starting with nothing.
 	HardState HardState
 	Log       *Log
+	Snapshot  *Snapshot
 
 	// PreVoteDisabled turns off the pre-vote round. It exists so tests can
 	// show what pre-vote is actually preventing.
@@ -93,6 +94,14 @@ type Node struct {
 	// prevHS is the last hard state reported, so Ready only reports changes.
 	prevHS HardState
 
+	// snapshot is the newest image this node holds, either taken locally or
+	// received from the leader. A leader sends it to followers that have
+	// fallen off the end of its retained log.
+	snapshot *Snapshot
+	// pendingSnapshot is a snapshot received from the leader that the runtime
+	// has not yet persisted and handed to the state machine.
+	pendingSnapshot *Snapshot
+
 	rand   *rand.Rand
 	logger *slog.Logger
 }
@@ -115,6 +124,15 @@ func NewNode(opts Options) *Node {
 		preVote:        !opts.PreVoteDisabled,
 		rand:           opts.Rand,
 		logger:         opts.Logger,
+	}
+	if opts.Snapshot != nil && !opts.Snapshot.IsEmpty() {
+		n.snapshot = opts.Snapshot
+		if len(n.cfg.Members) == 0 {
+			// A node restarting from a snapshot alone gets its membership from
+			// the snapshot, which is the configuration that was in force when
+			// the image was taken.
+			n.cfg = opts.Snapshot.Meta.Config.Clone()
+		}
 	}
 	if opts.HardState.Commit > 0 {
 		n.log.CommitTo(opts.HardState.Commit)
@@ -343,6 +361,8 @@ func (n *Node) stepStaleTerm(m Message) {
 		n.send(Message{Type: MsgHeartbeatResp, To: m.From, Reject: true})
 	case MsgAppendReq:
 		n.send(Message{Type: MsgAppendResp, To: m.From, Reject: true})
+	case MsgSnapshotReq:
+		n.send(Message{Type: MsgSnapshotResp, To: m.From, Reject: true})
 	case MsgVoteReq:
 		n.send(Message{Type: MsgVoteResp, To: m.From, PreVote: m.PreVote, Reject: true})
 	default:
@@ -358,6 +378,8 @@ func (n *Node) stepFollower(m Message) error {
 		n.handleHeartbeat(m)
 	case MsgAppendReq:
 		n.handleAppendRequest(m)
+	case MsgSnapshotReq:
+		n.handleSnapshot(m)
 	}
 	return nil
 }
@@ -375,6 +397,9 @@ func (n *Node) stepCandidate(m Message) error {
 	case MsgAppendReq:
 		n.becomeFollower(m.Term, m.From)
 		n.handleAppendRequest(m)
+	case MsgSnapshotReq:
+		n.becomeFollower(m.Term, m.From)
+		n.handleSnapshot(m)
 	}
 	return nil
 }
@@ -387,6 +412,8 @@ func (n *Node) stepLeader(m Message) error {
 		n.handleHeartbeatResponse(m)
 	case MsgAppendResp:
 		n.handleAppendResponse(m)
+	case MsgSnapshotResp:
+		n.handleSnapshotResponse(m)
 	}
 	return nil
 }
@@ -440,7 +467,8 @@ type Ready struct {
 
 	// HardState is non-nil only when it changed since the last Ready.
 	HardState *HardState
-	// Snapshot must be persisted and handed to the state machine.
+	// Snapshot must be persisted and handed to the state machine, replacing
+	// whatever it currently holds.
 	Snapshot *Snapshot
 	// Entries are new log entries to append to stable storage.
 	Entries []Entry
@@ -461,7 +489,8 @@ func (n *Node) HasReady() bool {
 	return len(n.msgs) > 0 ||
 		n.log.LastIndex() >= n.unstable ||
 		len(n.log.NextCommitted()) > 0 ||
-		!n.hardState().Equal(n.prevHS)
+		!n.hardState().Equal(n.prevHS) ||
+		n.hasPendingSnapshot()
 }
 
 // Ready drains the pending work. Everything it returns is owned by the caller.
@@ -473,6 +502,8 @@ func (n *Node) Ready() Ready {
 		rd.HardState = &copied
 		n.prevHS = hs
 	}
+
+	rd.Snapshot = n.takePendingSnapshot()
 
 	if last := n.log.LastIndex(); last >= n.unstable {
 		if ents, err := n.log.Slice(n.unstable, last+1); err == nil {

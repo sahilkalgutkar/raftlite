@@ -293,16 +293,3 @@ func (n *Node) progressSnapshot() map[NodeID]Progress {
 	}
 	return out
 }
-
-// sendSnapshot handles a follower whose next entry the leader no longer holds,
-// because compaction has already folded it into a snapshot. Marking the
-// follower keeps the leader from spinning on appends it can never satisfy.
-func (n *Node) sendSnapshot(to NodeID) {
-	p := n.progress[to]
-	if p == nil {
-		return
-	}
-	p.PendingSnapshot = n.log.SnapshotIndex()
-	n.logger.Warn("follower needs a snapshot",
-		"id", uint64(n.id), "follower", uint64(to), "next", p.Next, "snapshot", n.log.SnapshotIndex())
-}

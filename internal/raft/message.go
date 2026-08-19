@@ -25,6 +25,11 @@ const (
 	// MsgAppendResp reports how much of the log the follower now holds, or
 	// rejects with a hint about where the two logs diverge.
 	MsgAppendResp
+	// MsgSnapshotReq ships an entire state machine image to a follower whose
+	// next entry the leader has already compacted away.
+	MsgSnapshotReq
+	// MsgSnapshotResp acknowledges an installed snapshot.
+	MsgSnapshotResp
 )
 
 func (t MessageType) String() string {
@@ -41,6 +46,10 @@ func (t MessageType) String() string {
 		return "append-req"
 	case MsgAppendResp:
 		return "append-resp"
+	case MsgSnapshotReq:
+		return "snapshot-req"
+	case MsgSnapshotResp:
+		return "snapshot-resp"
 	default:
 		return fmt.Sprintf("msg(%d)", uint8(t))
 	}
@@ -74,6 +83,8 @@ type Message struct {
 	PrevLogTerm  uint64
 	// Entries are the log entries being replicated.
 	Entries []Entry
+	// Snapshot carries a full state machine image on MsgSnapshotReq.
+	Snapshot *Snapshot
 
 	// Reject is set on any response that refuses the request.
 	Reject bool
@@ -102,5 +113,5 @@ func (m Message) String() string {
 // isRequestFromLeader reports whether receiving this message means the sender
 // claims to be the leader of its term.
 func (m Message) isRequestFromLeader() bool {
-	return m.Type == MsgHeartbeatReq || m.Type == MsgAppendReq
+	return m.Type == MsgHeartbeatReq || m.Type == MsgAppendReq || m.Type == MsgSnapshotReq
 }
