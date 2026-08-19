@@ -73,6 +73,7 @@ func New(opts Options) *Server {
 	s.mux.HandleFunc("POST /members/{id}/promote", s.handlePromoteMember)
 	s.mux.HandleFunc("DELETE /members/{id}", s.handleRemoveMember)
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
+	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	return s
 }
 
@@ -146,6 +147,14 @@ func statusFor(err error) int {
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusGatewayTimeout
+	}
+}
+
+// handleMetrics serves the Prometheus text exposition format.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	if _, err := s.node.Metrics().WriteTo(w); err != nil {
+		s.logger.Warn("could not write metrics", "err", err)
 	}
 }
 
