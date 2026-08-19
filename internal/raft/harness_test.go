@@ -76,6 +76,12 @@ func newNetworkWith(t *testing.T, opts networkOpts, ids ...NodeID) *network {
 func (nw *network) node(id NodeID) *Node { return nw.nodes[id] }
 
 func (nw *network) reachable(from, to NodeID) bool {
+	if _, known := nw.nodes[to]; !known {
+		// A server the test has not started yet. On a real network this is a
+		// connection to an address that refuses it, which is exactly what
+		// adding a member before booting it looks like.
+		return false
+	}
 	if nw.down[from] || nw.down[to] {
 		return false
 	}
@@ -268,4 +274,32 @@ func (nw *network) assertConverged(ids ...NodeID) {
 			}
 		}
 	}
+}
+
+// join adds a brand new server to the running network. It is created with the
+// configuration the cluster is about to adopt, which is what the daemon's
+// --join flag does in practice: a joining server is told who its peers are, it
+// does not have to divine it from an empty log.
+func (nw *network) join(id NodeID, cfg Config) *Node {
+	nw.t.Helper()
+	n := NewNode(Options{
+		ID:             id,
+		Config:         cfg,
+		ElectionTicks:  10,
+		HeartbeatTicks: 1,
+		Rand:           rand.New(rand.NewPCG(99, uint64(id))),
+	})
+	nw.nodes[id] = n
+	nw.order = append(nw.order, id)
+	nw.group[id] = 0
+	return n
+}
+
+// confChange proposes a membership edit through the leader and settles.
+func (nw *network) confChange(leader NodeID, cc ConfChange) error {
+	if _, err := nw.nodes[leader].ProposeConfChange(cc); err != nil {
+		return err
+	}
+	nw.deliver()
+	return nil
 }

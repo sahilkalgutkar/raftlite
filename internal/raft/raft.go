@@ -102,6 +102,11 @@ type Node struct {
 	// has not yet persisted and handed to the state machine.
 	pendingSnapshot *Snapshot
 
+	// pendingConfIndex is the index of the most recent membership change. A
+	// new one is refused until this index commits, which is what keeps
+	// configurations one server apart.
+	pendingConfIndex uint64
+
 	rand   *rand.Rand
 	logger *slog.Logger
 }
@@ -519,13 +524,21 @@ func (n *Node) Ready() Ready {
 	return rd
 }
 
-// takeCommitted hands out the entries the state machine still owes.
+// takeCommitted hands out the entries the state machine still owes, folding
+// any configuration change among them into the live configuration first.
+// Membership is applied here, inside the algorithm, because it changes what a
+// quorum means for every decision that follows.
 func (n *Node) takeCommitted() []Entry {
 	ents := n.log.NextCommitted()
 	if len(ents) == 0 {
 		return nil
 	}
 	n.log.AppliedTo(ents[len(ents)-1].Index)
+	for _, e := range ents {
+		if e.Type == EntryConfChange {
+			n.applyConfChangeEntry(e)
+		}
+	}
 	return ents
 }
 
