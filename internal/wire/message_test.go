@@ -190,3 +190,68 @@ func TestSnapshotWithACorruptConfigIsRejected(t *testing.T) {
 		t.Fatal("a corrupt configuration decoded cleanly")
 	}
 }
+
+// TestEveryMessageFieldIsEncoded is the test that would have caught ReadID
+// going missing.
+//
+// The failure it guards against is quiet: a field added to Message and wired
+// through the algorithm, but never added to the codec. Every unit test passes,
+// because they build messages in memory, and every in-process cluster test
+// passes too, because the in-memory mesh hands the struct straight over. It
+// only breaks once two machines have to talk -- and then it breaks as a
+// timeout, which looks like a network problem rather than a missing field.
+//
+// So this fixture must have every field non-zero, and the reflection loop
+// fails if a newly added field is left out of it, which forces whoever adds
+// the field to think about encoding it.
+func TestEveryMessageFieldIsEncoded(t *testing.T) {
+	full := raft.Message{
+		Type:          raft.MsgAppendReq,
+		From:          3,
+		To:            7,
+		Term:          11,
+		PreVote:       true,
+		LastLogIndex:  13,
+		LastLogTerm:   17,
+		Commit:        19,
+		PrevLogIndex:  23,
+		PrevLogTerm:   29,
+		Entries:       []raft.Entry{{Index: 31, Term: 37, Type: raft.EntryNormal, Data: []byte("x")}},
+		Snapshot:      &raft.Snapshot{Meta: raft.SnapshotMeta{Index: 41, Term: 43}, Data: []byte("image")},
+		ReadID:        47,
+		Reject:        true,
+		MatchIndex:    53,
+		ConflictIndex: 59,
+		ConflictTerm:  61,
+	}
+
+	v := reflect.ValueOf(full)
+	for i := 0; i < v.NumField(); i++ {
+		if v.Field(i).IsZero() {
+			t.Fatalf("field %s is zero in this fixture: set it, and make sure the codec carries it",
+				v.Type().Field(i).Name)
+		}
+	}
+
+	got, err := DecodeMessage(EncodeMessage(full))
+	if err != nil {
+		t.Fatalf("DecodeMessage: %v", err)
+	}
+
+	gotV := reflect.ValueOf(got)
+	for i := 0; i < v.NumField(); i++ {
+		name := v.Type().Field(i).Name
+		if gotV.Field(i).IsZero() {
+			t.Fatalf("field %s did not survive the round trip", name)
+		}
+	}
+	if got.ReadID != full.ReadID {
+		t.Fatalf("ReadID = %d, want %d", got.ReadID, full.ReadID)
+	}
+	if !reflect.DeepEqual(got.Entries, full.Entries) {
+		t.Fatalf("entries = %v", got.Entries)
+	}
+	if got.Snapshot == nil || string(got.Snapshot.Data) != "image" {
+		t.Fatalf("snapshot = %+v", got.Snapshot)
+	}
+}

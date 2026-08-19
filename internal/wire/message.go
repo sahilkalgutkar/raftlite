@@ -85,6 +85,7 @@ func EncodeMessage(m raft.Message) []byte {
 	e.Uvarint(m.MatchIndex)
 	e.Uvarint(m.ConflictIndex)
 	e.Uvarint(m.ConflictTerm)
+	e.Uvarint(m.ReadID)
 	EncodeEntries(e, m.Entries)
 
 	e.Bool(m.Snapshot != nil)
@@ -116,6 +117,7 @@ func DecodeMessage(b []byte) (raft.Message, error) {
 	m.MatchIndex = d.Uvarint()
 	m.ConflictIndex = d.Uvarint()
 	m.ConflictTerm = d.Uvarint()
+	m.ReadID = d.Uvarint()
 	m.Entries = DecodeEntries(d)
 
 	if d.Bool() {

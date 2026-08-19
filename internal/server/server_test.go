@@ -323,3 +323,65 @@ func TestStartWithoutALoggerStillWorks(t *testing.T) {
 	defer inst.Shutdown(context.Background())
 	waitFor(t, "a leader", func() bool { return inst.Node().IsLeader() })
 }
+
+func TestLinearizableReadsWorkOverRealSockets(t *testing.T) {
+	// A regression test with a specific history. Linearizable reads passed
+	// every in-process test and then timed out against three real binaries,
+	// because the read identifier was never encoded on the wire and the
+	// in-memory mesh hands message structs over directly. Anything that
+	// depends on a field surviving the codec has to be exercised against real
+	// sockets at least once.
+	raftAddrs := []string{freeAddr(t), freeAddr(t), freeAddr(t)}
+	httpAddrs := []string{freeAddr(t), freeAddr(t), freeAddr(t)}
+
+	var peers []member
+	for i := 0; i < 3; i++ {
+		peers = append(peers, member{ID: nodeID(uint64(i + 1)), Addr: raftAddrs[i], ClientAddr: httpAddrs[i]})
+	}
+
+	var instances []*Instance
+	for i := 0; i < 3; i++ {
+		cfg := testConfig(t, uint64(i+1), raftAddrs[i], httpAddrs[i])
+		cfg.Peers = peers
+		cfg.Bootstrap = i == 0
+		inst, err := Start(cfg)
+		if err != nil {
+			t.Fatalf("Start node %d: %v", i+1, err)
+		}
+		instances = append(instances, inst)
+	}
+	defer func() {
+		for _, inst := range instances {
+			_ = inst.Shutdown(context.Background())
+		}
+	}()
+
+	var leader *Instance
+	waitFor(t, "a leader", func() bool {
+		for _, inst := range instances {
+			if inst.Node().IsLeader() {
+				leader = inst
+				return true
+			}
+		}
+		return false
+	})
+
+	base := "http://" + leader.HTTPAddr()
+	if code, body := request(t, http.MethodPut, base+"/kv/k", "v"); code != http.StatusOK {
+		t.Fatalf("PUT = %d: %s", code, body)
+	}
+
+	// The default consistency is linearizable, so this is the path that hung.
+	code, body := request(t, http.MethodGet, base+"/kv/k", "")
+	if code != http.StatusOK || body != "v" {
+		t.Fatalf("linearizable GET = %d %q", code, body)
+	}
+
+	// And directly, without the HTTP layer in the way.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := leader.Node().LinearizableRead(ctx); err != nil {
+		t.Fatalf("LinearizableRead: %v", err)
+	}
+}
