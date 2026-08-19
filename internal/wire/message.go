@@ -86,6 +86,11 @@ func EncodeMessage(m raft.Message) []byte {
 	e.Uvarint(m.ConflictIndex)
 	e.Uvarint(m.ConflictTerm)
 	EncodeEntries(e, m.Entries)
+
+	e.Bool(m.Snapshot != nil)
+	if m.Snapshot != nil {
+		EncodeSnapshot(e, *m.Snapshot)
+	}
 	return e.Result()
 }
 
@@ -113,6 +118,14 @@ func DecodeMessage(b []byte) (raft.Message, error) {
 	m.ConflictTerm = d.Uvarint()
 	m.Entries = DecodeEntries(d)
 
+	if d.Bool() {
+		snap, err := DecodeSnapshot(d)
+		if err != nil {
+			return raft.Message{}, err
+		}
+		m.Snapshot = &snap
+	}
+
 	if err := d.Err(); err != nil {
 		return raft.Message{}, err
 	}
@@ -133,4 +146,33 @@ func DecodeHardState(d *Decoder) raft.HardState {
 		Vote:   raft.NodeID(d.Uvarint()),
 		Commit: d.Uvarint(),
 	}
+}
+
+// EncodeSnapshot serialises a state machine image and the metadata that says
+// which log prefix it stands in for. The configuration travels with it because
+// a follower installing a snapshot may be adopting a membership it has never
+// seen an entry for.
+func EncodeSnapshot(e *Encoder, s raft.Snapshot) {
+	e.Uvarint(s.Meta.Index)
+	e.Uvarint(s.Meta.Term)
+	e.Bytes(s.Meta.Config.Marshal())
+	e.Bytes(s.Data)
+}
+
+// DecodeSnapshot reads a snapshot written by EncodeSnapshot.
+func DecodeSnapshot(d *Decoder) (raft.Snapshot, error) {
+	var snap raft.Snapshot
+	snap.Meta.Index = d.Uvarint()
+	snap.Meta.Term = d.Uvarint()
+	cfgBytes := d.Bytes()
+	snap.Data = d.Bytes()
+	if err := d.Err(); err != nil {
+		return raft.Snapshot{}, err
+	}
+	cfg, err := raft.UnmarshalConfig(cfgBytes)
+	if err != nil {
+		return raft.Snapshot{}, err
+	}
+	snap.Meta.Config = cfg
+	return snap, nil
 }

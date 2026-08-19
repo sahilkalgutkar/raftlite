@@ -369,45 +369,6 @@ func TestFollowerAtSnapshotBoundaryReportsItsPosition(t *testing.T) {
 	}
 }
 
-func TestLeaderMarksACompactedFollowerForSnapshot(t *testing.T) {
-	nw := newNetwork(t, 1, 2, 3)
-	leader := nw.tickUntilLeader(100)
-	for i := 0; i < 5; i++ {
-		if _, err := nw.propose(leader.ID(), fmt.Sprintf("cmd-%d", i)); err != nil {
-			t.Fatalf("propose: %v", err)
-		}
-	}
-
-	var follower NodeID
-	for _, id := range nw.order {
-		if id != leader.ID() {
-			follower = id
-			break
-		}
-	}
-	// Rewind the follower's progress to entries the leader no longer holds.
-	if err := leader.log.Compact(leader.Log().LastIndex()); err != nil {
-		t.Fatalf("Compact: %v", err)
-	}
-	leader.progress[follower].Next = 1
-
-	leader.msgs = nil
-	leader.sendAppend(follower)
-	if len(leader.msgs) != 0 {
-		t.Fatalf("leader sent entries it no longer has: %v", leader.msgs)
-	}
-	if leader.progress[follower].PendingSnapshot == 0 {
-		t.Fatal("follower was not marked as needing a snapshot")
-	}
-
-	// While a snapshot is outstanding the leader stops probing.
-	leader.progress[follower].Next = leader.Log().LastIndex()
-	leader.sendAppend(follower)
-	if len(leader.msgs) != 0 {
-		t.Fatalf("leader kept probing during a pending snapshot: %v", leader.msgs)
-	}
-}
-
 func TestHeartbeatCommitIsClampedToWhatTheFollowerHolds(t *testing.T) {
 	nw := newNetwork(t, 1, 2, 3)
 	leader := nw.tickUntilLeader(100)

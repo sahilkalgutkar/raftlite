@@ -50,6 +50,9 @@ type Options struct {
 type State struct {
 	HardState raft.HardState
 	Entries   []raft.Entry
+	// Snapshot is the newest readable state machine image, if any. Entries
+	// covers only what comes after it.
+	Snapshot *raft.Snapshot
 }
 
 // Store is a node's on-disk state.
@@ -75,10 +78,22 @@ func Open(opts Options) (*Store, *State, error) {
 		return nil, nil, fmt.Errorf("storage: create dir: %w", err)
 	}
 
+	snap, err := loadLatestSnapshot(opts.Dir, opts.Logger)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	path := filepath.Join(opts.Dir, walName)
 	state, goodBytes, err := replay(path, opts.Logger)
 	if err != nil {
 		return nil, nil, err
+	}
+	state.Snapshot = snap
+	if snap != nil {
+		// Anything the snapshot already covers is redundant. Compaction
+		// normally removes it, but a crash between writing the snapshot and
+		// rewriting the log leaves it behind, which is the safe direction.
+		state.Entries = dropThrough(state.Entries, snap.Meta.Index)
 	}
 
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
@@ -98,6 +113,9 @@ func Open(opts Options) (*Store, *State, error) {
 	}
 
 	s := &Store{dir: opts.Dir, file: f, noSync: opts.NoSync, logger: opts.Logger}
+	if snap != nil {
+		s.lastIndex = snap.Meta.Index
+	}
 	if n := len(state.Entries); n > 0 {
 		s.lastIndex = state.Entries[n-1].Index
 	}
@@ -270,6 +288,16 @@ func applyRecord(state *State, payload []byte) error {
 		state.Entries = truncateFrom(state.Entries, from)
 	default:
 		return fmt.Errorf("unknown record type %d", typ)
+	}
+	return nil
+}
+
+// dropThrough removes every entry at or below an index.
+func dropThrough(ents []raft.Entry, through uint64) []raft.Entry {
+	for i, e := range ents {
+		if e.Index > through {
+			return ents[i:]
+		}
 	}
 	return nil
 }
