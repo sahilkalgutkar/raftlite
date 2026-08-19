@@ -52,6 +52,7 @@ func (n *Node) sendSnapshot(to NodeID) {
 	}
 
 	p.PendingSnapshot = n.snapshot.Meta.Index
+	p.snapshotWait = snapshotRetryHeartbeats
 	n.logger.Info("sending snapshot",
 		"id", uint64(n.id), "follower", uint64(to),
 		"index", n.snapshot.Meta.Index, "bytes", len(n.snapshot.Data))
@@ -101,6 +102,7 @@ func (n *Node) handleSnapshotResponse(m Message) {
 	}
 	p.RecentActive = true
 	p.PendingSnapshot = 0
+	p.snapshotWait = 0
 
 	if m.Reject {
 		n.logger.Warn("follower rejected a snapshot", "id", uint64(n.id), "follower", uint64(m.From))
@@ -111,6 +113,28 @@ func (n *Node) handleSnapshotResponse(m Message) {
 	}
 	if p.Next <= n.log.LastIndex() {
 		n.sendAppend(m.From)
+	}
+}
+
+// snapshotRetryHeartbeats is how many heartbeats a snapshot may go
+// unacknowledged before the leader assumes it never arrived.
+const snapshotRetryHeartbeats = 10
+
+// expireSnapshots gives up on snapshots that were never acknowledged, so the
+// next append attempt sends a fresh one. A snapshot is a single unreliable
+// message like any other; treating it as guaranteed is what leaves a follower
+// stranded when the network eats it.
+func (n *Node) expireSnapshots() {
+	for id, p := range n.progress {
+		if p.PendingSnapshot == 0 {
+			continue
+		}
+		p.snapshotWait--
+		if p.snapshotWait <= 0 {
+			n.logger.Warn("snapshot went unacknowledged; will retry",
+				"id", uint64(n.id), "follower", uint64(id), "index", p.PendingSnapshot)
+			p.PendingSnapshot = 0
+		}
 	}
 }
 

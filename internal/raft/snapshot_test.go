@@ -357,3 +357,49 @@ func TestCandidateConcedesToASnapshot(t *testing.T) {
 		t.Fatalf("snapshot was not installed: boundary = %d", n.Log().SnapshotIndex())
 	}
 }
+
+func TestAnUnacknowledgedSnapshotIsRetried(t *testing.T) {
+	// A snapshot is an unreliable message like any other. If the network eats
+	// it, the leader must eventually try again -- treating it as guaranteed
+	// strands that follower forever, since the leader refuses to send anything
+	// else while one is outstanding.
+	nw, leader, lagging := buildLeaderWithBacklog(t, 6)
+	nw.deliver()
+	if err := leader.Compact(leader.Log().Applied(), []byte("image")); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	leader.msgs = nil
+	leader.sendAppend(lagging)
+	if len(leader.msgs) != 1 || leader.msgs[0].Type != MsgSnapshotReq {
+		t.Fatalf("first attempt sent %v", leader.msgs)
+	}
+	// Pretend it never arrived.
+	leader.msgs = nil
+
+	for i := 0; i < snapshotRetryHeartbeats; i++ {
+		leader.expireSnapshots()
+	}
+	if leader.progress[lagging].PendingSnapshot != 0 {
+		t.Fatal("the leader is still waiting on a snapshot that was lost")
+	}
+
+	leader.sendAppend(lagging)
+	if len(leader.msgs) != 1 || leader.msgs[0].Type != MsgSnapshotReq {
+		t.Fatalf("no retry was sent: %v", leader.msgs)
+	}
+}
+
+func TestPendingSnapshotSurvivesTheFirstFewHeartbeats(t *testing.T) {
+	nw, leader, lagging := buildLeaderWithBacklog(t, 4)
+	nw.deliver()
+	if err := leader.Compact(leader.Log().Applied(), []byte("image")); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	leader.sendAppend(lagging)
+
+	leader.expireSnapshots()
+	if leader.progress[lagging].PendingSnapshot == 0 {
+		t.Fatal("the leader gave up on a snapshot after a single heartbeat")
+	}
+}
