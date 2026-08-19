@@ -212,3 +212,60 @@ func (nw *network) mustLeader() *Node {
 	}
 	return l
 }
+
+// propose submits a command through the given node and lets the cluster settle.
+func (nw *network) propose(id NodeID, cmd string) (uint64, error) {
+	idx, err := nw.nodes[id].Propose(EntryNormal, []byte(cmd))
+	if err != nil {
+		return 0, err
+	}
+	nw.deliver()
+	return idx, nil
+}
+
+// commands returns the payloads a node's state machine was handed, skipping
+// the bookkeeping entries the algorithm writes for itself.
+func (nw *network) commands(id NodeID) []string {
+	var out []string
+	for _, e := range nw.applied[id] {
+		if e.Type == EntryNormal {
+			out = append(out, string(e.Data))
+		}
+	}
+	return out
+}
+
+// assertConverged checks that every reachable node holds the same log and has
+// applied the same commands -- the property the whole algorithm exists for.
+func (nw *network) assertConverged(ids ...NodeID) {
+	nw.t.Helper()
+	var ref NodeID
+	for _, id := range ids {
+		if ref == 0 {
+			ref = id
+			continue
+		}
+		a, b := nw.nodes[ref], nw.nodes[id]
+		if a.log.LastIndex() != b.log.LastIndex() {
+			nw.t.Fatalf("nodes %d and %d disagree on last index: %d vs %d",
+				uint64(ref), uint64(id), a.log.LastIndex(), b.log.LastIndex())
+		}
+		for i := a.log.FirstIndex(); i <= a.log.LastIndex(); i++ {
+			ta, _ := a.Log().Term(i)
+			tb, _ := b.Log().Term(i)
+			if ta != tb {
+				nw.t.Fatalf("nodes %d and %d disagree at index %d: term %d vs %d",
+					uint64(ref), uint64(id), i, ta, tb)
+			}
+		}
+		ca, cb := nw.commands(ref), nw.commands(id)
+		if len(ca) != len(cb) {
+			nw.t.Fatalf("nodes %d and %d applied different commands: %v vs %v", uint64(ref), uint64(id), ca, cb)
+		}
+		for i := range ca {
+			if ca[i] != cb[i] {
+				nw.t.Fatalf("nodes %d and %d diverged at command %d: %q vs %q", uint64(ref), uint64(id), i, ca[i], cb[i])
+			}
+		}
+	}
+}

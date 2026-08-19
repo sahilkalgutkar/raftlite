@@ -73,6 +73,9 @@ type Node struct {
 
 	// votes records the responses to the election currently in flight.
 	votes map[NodeID]bool
+	// progress is the leader's view of every follower. It is nil on anyone
+	// who is not currently leading.
+	progress map[NodeID]*Progress
 
 	electionTicks    int
 	heartbeatTicks   int
@@ -134,6 +137,9 @@ func (n *Node) Term() uint64 { return n.term }
 // Leader is the leader of the current term, or None if unknown.
 func (n *Node) Leader() NodeID { return n.lead }
 
+// Log exposes the replicated log for inspection.
+func (n *Node) Log() *Log { return n.log }
+
 // Config is the cluster configuration currently in force.
 func (n *Node) Config() Config { return n.cfg.Clone() }
 
@@ -153,7 +159,12 @@ func (n *Node) Tick() {
 	switch n.role {
 	case Leader:
 		n.heartbeatElapsed++
-		if n.heartbeatElapsed >= n.heartbeatTicks {
+		n.electionElapsed++
+		if n.electionElapsed >= n.electionTimeout {
+			n.electionElapsed = 0
+			n.checkQuorum()
+		}
+		if n.role == Leader && n.heartbeatElapsed >= n.heartbeatTicks {
 			n.heartbeatElapsed = 0
 			n.bcastHeartbeat()
 		}
@@ -185,6 +196,7 @@ func (n *Node) becomeFollower(term uint64, lead NodeID) {
 	}
 	n.role = Follower
 	n.lead = lead
+	n.progress = nil
 	n.electionElapsed = 0
 	n.resetElectionTimeout()
 	n.logger.Debug("became follower", "id", uint64(n.id), "term", n.term, "leader", uint64(lead))
@@ -216,7 +228,8 @@ func (n *Node) becomeLeader() {
 	n.role = Leader
 	n.lead = n.id
 	n.heartbeatElapsed = 0
-	n.bcastHeartbeat()
+	n.electionElapsed = 0
+	n.onBecomeLeader()
 	n.logger.Info("became leader", "id", uint64(n.id), "term", n.term, "last_index", n.log.LastIndex())
 }
 
@@ -328,6 +341,8 @@ func (n *Node) stepStaleTerm(m Message) {
 	switch m.Type {
 	case MsgHeartbeatReq:
 		n.send(Message{Type: MsgHeartbeatResp, To: m.From, Reject: true})
+	case MsgAppendReq:
+		n.send(Message{Type: MsgAppendResp, To: m.From, Reject: true})
 	case MsgVoteReq:
 		n.send(Message{Type: MsgVoteResp, To: m.From, PreVote: m.PreVote, Reject: true})
 	default:
@@ -341,6 +356,8 @@ func (n *Node) stepFollower(m Message) error {
 		n.handleVoteRequest(m)
 	case MsgHeartbeatReq:
 		n.handleHeartbeat(m)
+	case MsgAppendReq:
+		n.handleAppendRequest(m)
 	}
 	return nil
 }
@@ -355,6 +372,9 @@ func (n *Node) stepCandidate(m Message) error {
 		// Someone else won this term. Concede and follow them.
 		n.becomeFollower(m.Term, m.From)
 		n.handleHeartbeat(m)
+	case MsgAppendReq:
+		n.becomeFollower(m.Term, m.From)
+		n.handleAppendRequest(m)
 	}
 	return nil
 }
@@ -363,6 +383,10 @@ func (n *Node) stepLeader(m Message) error {
 	switch m.Type {
 	case MsgVoteReq:
 		n.handleVoteRequest(m)
+	case MsgHeartbeatResp:
+		n.handleHeartbeatResponse(m)
+	case MsgAppendResp:
+		n.handleAppendResponse(m)
 	}
 	return nil
 }
@@ -377,10 +401,16 @@ func (n *Node) bcastHeartbeat() {
 }
 
 // sendHeartbeat tells one follower the leader is still alive. The commit index
-// travels with it so a follower learns about newly committed entries without
-// waiting for the next write.
+// rides along so a follower learns about newly committed entries without
+// waiting for the next write -- clamped to what the leader knows that follower
+// holds, because a follower must never be told to commit an entry it does not
+// have.
 func (n *Node) sendHeartbeat(to NodeID) {
-	n.send(Message{Type: MsgHeartbeatReq, To: to, Commit: n.log.Committed()})
+	commit := n.log.Committed()
+	if p := n.progress[to]; p != nil && p.Match < commit {
+		commit = p.Match
+	}
+	n.send(Message{Type: MsgHeartbeatReq, To: to, Commit: commit})
 }
 
 // commitFromLeader advances the commit index toward what the leader reports,
@@ -479,6 +509,7 @@ type Status struct {
 	LastIndex uint64
 	Snapshot  uint64
 	Config    Config
+	Progress  map[NodeID]Progress
 }
 
 // Status returns a consistent view of the node's state.
@@ -494,6 +525,7 @@ func (n *Node) Status() Status {
 		Snapshot:  n.log.SnapshotIndex(),
 		Config:    n.cfg.Clone(),
 	}
+	s.Progress = n.progressSnapshot()
 	return s
 }
 

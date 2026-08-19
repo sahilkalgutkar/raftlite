@@ -19,6 +19,12 @@ const (
 	MsgHeartbeatReq
 	// MsgHeartbeatResp acknowledges a heartbeat.
 	MsgHeartbeatResp
+	// MsgAppendReq carries log entries from the leader to a follower, along
+	// with the log matching check that has to pass before they are accepted.
+	MsgAppendReq
+	// MsgAppendResp reports how much of the log the follower now holds, or
+	// rejects with a hint about where the two logs diverge.
+	MsgAppendResp
 )
 
 func (t MessageType) String() string {
@@ -31,6 +37,10 @@ func (t MessageType) String() string {
 		return "heartbeat-req"
 	case MsgHeartbeatResp:
 		return "heartbeat-resp"
+	case MsgAppendReq:
+		return "append-req"
+	case MsgAppendResp:
+		return "append-resp"
 	default:
 		return fmt.Sprintf("msg(%d)", uint8(t))
 	}
@@ -58,8 +68,23 @@ type Message struct {
 	// follower can never be told to commit an entry it does not hold.
 	Commit uint64
 
+	// PrevLogIndex and PrevLogTerm are the log matching check: the follower
+	// only accepts the entries if it holds exactly this entry before them.
+	PrevLogIndex uint64
+	PrevLogTerm  uint64
+	// Entries are the log entries being replicated.
+	Entries []Entry
+
 	// Reject is set on any response that refuses the request.
 	Reject bool
+
+	// MatchIndex is how far the follower's log now matches the leader's.
+	MatchIndex uint64
+	// ConflictIndex and ConflictTerm are the rejection hint that lets a leader
+	// skip a whole term of mismatched entries in one round trip instead of
+	// backing up one index at a time.
+	ConflictIndex uint64
+	ConflictTerm  uint64
 }
 
 func (m Message) String() string {
@@ -77,5 +102,5 @@ func (m Message) String() string {
 // isRequestFromLeader reports whether receiving this message means the sender
 // claims to be the leader of its term.
 func (m Message) isRequestFromLeader() bool {
-	return m.Type == MsgHeartbeatReq
+	return m.Type == MsgHeartbeatReq || m.Type == MsgAppendReq
 }

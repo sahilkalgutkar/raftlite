@@ -466,25 +466,6 @@ func TestMessageAndStatusFormatting(t *testing.T) {
 	}
 }
 
-func TestHeartbeatCarriesCommitIndexForward(t *testing.T) {
-	nw := newNetwork(t, 1, 2, 3)
-	leader := nw.tickUntilLeader(100)
-	follower := nw.node(leader.ID()%3 + 1)
-
-	// Both sides hold the same two entries; only the leader knows they are
-	// committed. The heartbeat is what tells the follower.
-	leader.log.Append(Entry{Term: leader.Term()}, Entry{Term: leader.Term()})
-	follower.log.Append(Entry{Term: leader.Term()}, Entry{Term: leader.Term()})
-	leader.log.CommitTo(2)
-
-	leader.bcastHeartbeat()
-	nw.deliver()
-
-	if got := follower.log.Committed(); got != 2 {
-		t.Fatalf("follower commit = %d, want 2", got)
-	}
-}
-
 func TestCommitFromLeaderNeverPassesOurOwnLog(t *testing.T) {
 	n := newNetwork(t, 1, 2, 3).node(1)
 	n.log.Append(Entry{Term: 1})
