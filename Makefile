@@ -2,7 +2,7 @@ GO      ?= go
 BIN     ?= bin
 PKGS    := ./...
 
-.PHONY: all build test cover lint fmt vet clean tidy
+.PHONY: all build test cover lint fmt vet clean tidy docker up down demo chaos
 
 all: build
 
@@ -14,7 +14,7 @@ test:
 	$(GO) test -race -count=1 $(PKGS)
 
 cover:
-	$(GO) test -covermode=atomic -coverprofile=coverage.out $(PKGS)
+	$(GO) test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out $(PKGS)
 	$(GO) tool cover -func=coverage.out | tail -1
 
 fmt:
@@ -27,6 +27,21 @@ lint: fmt vet
 
 tidy:
 	$(GO) mod tidy
+
+docker:
+	docker build -t raftlite:local .
+
+up:
+	docker compose up -d --build --wait
+
+down:
+	docker compose down -v
+
+demo: build
+	./scripts/demo.sh
+
+chaos:
+	$(GO) test -race -count=1 -v ./internal/chaos/
 
 clean:
 	rm -rf $(BIN) coverage.out coverage/ data/

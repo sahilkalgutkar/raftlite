@@ -1,0 +1,73 @@
+# A three node raftlite cluster.
+#
+#   docker compose up -d
+#   ./scripts/demo.sh
+#
+# Each node advertises its service name rather than an IP, so the addresses in
+# the replicated configuration stay valid across restarts and rescheduling --
+# a member's address is part of consensus state, and pinning it to a container
+# IP would mean a restart silently invalidates what the cluster agreed on.
+services:
+  raftlite-1:
+    build: .
+    image: raftlite:local
+    command:
+      - --id=1
+      - --raft-addr=raftlite-1:9001
+      - --http-addr=0.0.0.0:8001
+      - --data-dir=/data
+      - --peer=1,raftlite-1:9001,raftlite-1:8001
+      - --peer=2,raftlite-2:9001,raftlite-2:8001
+      - --peer=3,raftlite-3:9001,raftlite-3:8001
+      - --bootstrap
+      - --log-level=info
+    ports:
+      - "8001:8001"
+    volumes:
+      - raftlite-1-data:/data
+    networks: [raftlite]
+
+  raftlite-2:
+    build: .
+    image: raftlite:local
+    command:
+      - --id=2
+      - --raft-addr=raftlite-2:9001
+      - --http-addr=0.0.0.0:8001
+      - --data-dir=/data
+      - --peer=1,raftlite-1:9001,raftlite-1:8001
+      - --peer=2,raftlite-2:9001,raftlite-2:8001
+      - --peer=3,raftlite-3:9001,raftlite-3:8001
+      - --log-level=info
+    ports:
+      - "8002:8001"
+    volumes:
+      - raftlite-2-data:/data
+    networks: [raftlite]
+
+  raftlite-3:
+    build: .
+    image: raftlite:local
+    command:
+      - --id=3
+      - --raft-addr=raftlite-3:9001
+      - --http-addr=0.0.0.0:8001
+      - --data-dir=/data
+      - --peer=1,raftlite-1:9001,raftlite-1:8001
+      - --peer=2,raftlite-2:9001,raftlite-2:8001
+      - --peer=3,raftlite-3:9001,raftlite-3:8001
+      - --log-level=info
+    ports:
+      - "8003:8001"
+    volumes:
+      - raftlite-3-data:/data
+    networks: [raftlite]
+
+volumes:
+  raftlite-1-data:
+  raftlite-2-data:
+  raftlite-3-data:
+
+networks:
+  raftlite:
+    driver: bridge
