@@ -237,3 +237,53 @@ func TestConfigApplyRejectsUnsafeChanges(t *testing.T) {
 		t.Fatalf("removing the last voter = %v, want rejection", err)
 	}
 }
+
+func TestConfigCarriesBothAddresses(t *testing.T) {
+	// Peer traffic and client traffic are different things and may live on
+	// different ports, so both addresses are replicated: every node has to
+	// know where the leader answers clients in order to redirect them there.
+	c := NewConfig(
+		Member{ID: 1, Addr: "10.0.0.1:9001", ClientAddr: "10.0.0.1:8001"},
+		Member{ID: 2, Addr: "10.0.0.2:9001", ClientAddr: "10.0.0.2:8001", Learner: true},
+	)
+	got, err := UnmarshalConfig(c.Marshal())
+	if err != nil {
+		t.Fatalf("UnmarshalConfig: %v", err)
+	}
+	if !got.Equal(c) {
+		t.Fatalf("round trip: %v != %v", got, c)
+	}
+	m, _ := got.Member(1)
+	if m.ClientAddr != "10.0.0.1:8001" {
+		t.Fatalf("client address = %q", m.ClientAddr)
+	}
+}
+
+func TestConfChangeCarriesBothAddresses(t *testing.T) {
+	cc := ConfChange{Type: ConfChangeAddVoter, ID: 4, Addr: "10.0.0.4:9001", ClientAddr: "10.0.0.4:8001"}
+	got, err := UnmarshalConfChange(cc.Marshal())
+	if err != nil {
+		t.Fatalf("UnmarshalConfChange: %v", err)
+	}
+	if got != cc {
+		t.Fatalf("round trip: %+v != %+v", got, cc)
+	}
+
+	applied, err := Config{}.Apply(cc)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	m, _ := applied.Member(4)
+	if m.ClientAddr != "10.0.0.4:8001" {
+		t.Fatalf("applied member = %+v", m)
+	}
+
+	// Promotion can also update the addresses.
+	promoted, err := applied.Apply(ConfChange{Type: ConfChangePromote, ID: 4, ClientAddr: "10.0.0.4:8002"})
+	if err != nil {
+		t.Fatalf("Apply promote: %v", err)
+	}
+	if m, _ := promoted.Member(4); m.ClientAddr != "10.0.0.4:8002" {
+		t.Fatalf("promotion did not update the client address: %+v", m)
+	}
+}
