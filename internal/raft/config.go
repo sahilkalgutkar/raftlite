@@ -15,9 +15,17 @@ import (
 // without stalling writes: it streams the log as a learner first, and only
 // gets promoted once it is close enough that adding it to the quorum is cheap.
 type Member struct {
-	ID      NodeID
-	Addr    string
-	Learner bool
+	ID   NodeID
+	Addr string
+	// ClientAddr is where clients reach this server, as opposed to Addr which
+	// is where its peers do. They are separate because they genuinely are two
+	// different things: peer traffic is consensus, client traffic is the API,
+	// and a deployment may well want them on different ports, interfaces or
+	// networks. It also has to be part of the replicated configuration rather
+	// than local knowledge, since redirecting a client to the leader means
+	// every node has to know where the leader answers.
+	ClientAddr string
+	Learner    bool
 }
 
 // Config is a cluster configuration. Members are kept sorted by ID so that the
@@ -152,6 +160,8 @@ func (c Config) Marshal() []byte {
 		buf = binary.AppendUvarint(buf, uint64(m.ID))
 		buf = binary.AppendUvarint(buf, uint64(len(m.Addr)))
 		buf = append(buf, m.Addr...)
+		buf = binary.AppendUvarint(buf, uint64(len(m.ClientAddr)))
+		buf = append(buf, m.ClientAddr...)
 		if m.Learner {
 			buf = append(buf, 1)
 		} else {
@@ -185,10 +195,21 @@ func UnmarshalConfig(b []byte) (Config, error) {
 		b = b[n:]
 		addr := string(b[:alen])
 		b = b[alen:]
+
+		clen, n := binary.Uvarint(b)
+		if n <= 0 || uint64(len(b[n:])) < clen {
+			return Config{}, ErrMalformedConfig
+		}
+		b = b[n:]
+		clientAddr := string(b[:clen])
+		b = b[clen:]
+
 		if len(b) < 1 {
 			return Config{}, ErrMalformedConfig
 		}
-		cfg.Members = append(cfg.Members, Member{ID: NodeID(id), Addr: addr, Learner: b[0] == 1})
+		cfg.Members = append(cfg.Members, Member{
+			ID: NodeID(id), Addr: addr, ClientAddr: clientAddr, Learner: b[0] == 1,
+		})
 		b = b[1:]
 	}
 	cfg.normalize()
@@ -229,9 +250,10 @@ func (t ConfChangeType) String() string {
 // which single-server changes guarantee for free -- so this type deliberately
 // cannot express a batch edit.
 type ConfChange struct {
-	Type ConfChangeType
-	ID   NodeID
-	Addr string
+	Type       ConfChangeType
+	ID         NodeID
+	Addr       string
+	ClientAddr string
 }
 
 func (cc ConfChange) String() string {
@@ -245,6 +267,8 @@ func (cc ConfChange) Marshal() []byte {
 	buf = binary.AppendUvarint(buf, uint64(cc.ID))
 	buf = binary.AppendUvarint(buf, uint64(len(cc.Addr)))
 	buf = append(buf, cc.Addr...)
+	buf = binary.AppendUvarint(buf, uint64(len(cc.ClientAddr)))
+	buf = append(buf, cc.ClientAddr...)
 	return buf
 }
 
@@ -265,7 +289,15 @@ func UnmarshalConfChange(b []byte) (ConfChange, error) {
 	if n <= 0 || uint64(len(b[n:])) < alen {
 		return ConfChange{}, ErrMalformedConfig
 	}
-	cc.Addr = string(b[n : uint64(n)+alen])
+	b = b[n:]
+	cc.Addr = string(b[:alen])
+	b = b[alen:]
+
+	clen, n := binary.Uvarint(b)
+	if n <= 0 || uint64(len(b[n:])) < clen {
+		return ConfChange{}, ErrMalformedConfig
+	}
+	cc.ClientAddr = string(b[n : uint64(n)+clen])
 	return cc, nil
 }
 
@@ -274,12 +306,12 @@ func UnmarshalConfChange(b []byte) (ConfChange, error) {
 func (c Config) Apply(cc ConfChange) (Config, error) {
 	switch cc.Type {
 	case ConfChangeAddVoter:
-		return c.With(Member{ID: cc.ID, Addr: cc.Addr, Learner: false}), nil
+		return c.With(Member{ID: cc.ID, Addr: cc.Addr, ClientAddr: cc.ClientAddr, Learner: false}), nil
 	case ConfChangeAddLearner:
 		if c.IsVoter(cc.ID) {
 			return c, fmt.Errorf("%w: cannot demote voter %d to learner", ErrInvalidConfChange, uint64(cc.ID))
 		}
-		return c.With(Member{ID: cc.ID, Addr: cc.Addr, Learner: true}), nil
+		return c.With(Member{ID: cc.ID, Addr: cc.Addr, ClientAddr: cc.ClientAddr, Learner: true}), nil
 	case ConfChangePromote:
 		m, ok := c.Member(cc.ID)
 		if !ok {
@@ -288,6 +320,9 @@ func (c Config) Apply(cc ConfChange) (Config, error) {
 		m.Learner = false
 		if cc.Addr != "" {
 			m.Addr = cc.Addr
+		}
+		if cc.ClientAddr != "" {
+			m.ClientAddr = cc.ClientAddr
 		}
 		return c.With(m), nil
 	case ConfChangeRemove:

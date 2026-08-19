@@ -352,7 +352,7 @@ func TestMembershipChangesAtRuntime(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := leader.AddMember(ctx, newID, "mem://4", false); err != nil {
+	if err := leader.AddMember(ctx, newID, "mem://4", "mem://4-client", false); err != nil {
 		t.Fatalf("AddMember: %v", err)
 	}
 	c.waitFor("the learner to catch up", func() bool {

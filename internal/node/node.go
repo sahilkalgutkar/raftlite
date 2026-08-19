@@ -265,16 +265,29 @@ func (n *Node) Store() *fsm.KV { return n.kv }
 // IsLeader reports whether this node is currently leading.
 func (n *Node) IsLeader() bool { return n.Status().Role == raft.Leader }
 
-// LeaderAddr returns the address of the current leader, or "" if unknown.
+// LeaderAddr returns the peer address of the current leader, or "" if unknown.
 func (n *Node) LeaderAddr() string {
-	st := n.Status()
-	if st.Leader == raft.None {
-		return ""
-	}
-	if m, ok := st.Config.Member(st.Leader); ok {
+	if m, ok := n.leaderMember(); ok {
 		return m.Addr
 	}
 	return ""
+}
+
+// LeaderClientAddr returns the address clients should be redirected to, or ""
+// if there is no known leader.
+func (n *Node) LeaderClientAddr() string {
+	if m, ok := n.leaderMember(); ok {
+		return m.ClientAddr
+	}
+	return ""
+}
+
+func (n *Node) leaderMember() (raft.Member, bool) {
+	st := n.Status()
+	if st.Leader == raft.None {
+		return raft.Member{}, false
+	}
+	return st.Config.Member(st.Leader)
 }
 
 // Propose replicates a state machine command and waits for it to be applied.
@@ -323,12 +336,12 @@ func (n *Node) submit(ctx context.Context, p *proposal) (fsm.Result, error) {
 // AddMember adds a server to the cluster. New servers join as learners so a
 // cold replica can catch up without being counted in any quorum; promote it
 // once it is close to the leader.
-func (n *Node) AddMember(ctx context.Context, id raft.NodeID, addr string, voting bool) error {
+func (n *Node) AddMember(ctx context.Context, id raft.NodeID, addr, clientAddr string, voting bool) error {
 	typ := raft.ConfChangeAddLearner
 	if voting {
 		typ = raft.ConfChangeAddVoter
 	}
-	return n.ProposeConfChange(ctx, raft.ConfChange{Type: typ, ID: id, Addr: addr})
+	return n.ProposeConfChange(ctx, raft.ConfChange{Type: typ, ID: id, Addr: addr, ClientAddr: clientAddr})
 }
 
 // PromoteMember turns a learner into a voter.
