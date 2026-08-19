@@ -86,6 +86,11 @@ type Message struct {
 	// Snapshot carries a full state machine image on MsgSnapshotReq.
 	Snapshot *Snapshot
 
+	// ReadID carries a linearizable read's identifier on a heartbeat and its
+	// echo on the reply, which is how a leader proves to itself that it was
+	// still the leader at the moment the read began.
+	ReadID uint64
+
 	// Reject is set on any response that refuses the request.
 	Reject bool
 
