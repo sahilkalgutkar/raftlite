@@ -189,6 +189,7 @@ func (n *Node) Tick() {
 		}
 		if n.role == Leader && n.heartbeatElapsed >= n.heartbeatTicks {
 			n.heartbeatElapsed = 0
+			n.expireSnapshots()
 			n.bcastHeartbeat()
 		}
 	default:

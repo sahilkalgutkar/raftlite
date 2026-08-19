@@ -23,6 +23,12 @@ type Progress struct {
 	// While it is set the leader stops sending entries, since they would just
 	// be rejected until the snapshot lands.
 	PendingSnapshot uint64
+	// snapshotWait counts down the heartbeats a snapshot may stay outstanding
+	// before the leader assumes it was lost and tries again. Without it, a
+	// single dropped snapshot message strands that follower permanently: the
+	// leader waits for an acknowledgement that is never coming, and refuses to
+	// send anything else in the meantime.
+	snapshotWait int
 }
 
 func (p *Progress) String() string {
