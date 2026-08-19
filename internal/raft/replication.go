@@ -49,6 +49,10 @@ func (n *Node) onBecomeLeader() {
 		}
 		n.progress[m.ID] = p
 	}
+	// Any configuration change from a previous term either committed before
+	// this node took over or never will, so nothing is in flight as far as the
+	// new leader is concerned.
+	n.pendingConfIndex = last
 	n.appendOwn(Entry{Term: n.term, Type: EntryNoOp})
 	n.bcastAppend()
 }
