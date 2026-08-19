@@ -61,8 +61,8 @@ func (e *Encoder) Bytes(b []byte) {
 	e.buf = append(e.buf, b...)
 }
 
-// String appends a length-prefixed string.
-func (e *Encoder) String(s string) {
+// Text appends a length-prefixed string.
+func (e *Encoder) Text(s string) {
 	e.Uvarint(uint64(len(s)))
 	e.buf = append(e.buf, s...)
 }
@@ -162,8 +162,10 @@ func (d *Decoder) Bytes() []byte {
 	return out
 }
 
-// String reads a length-prefixed string.
-func (d *Decoder) String() string {
+// Text reads a length-prefixed string. It is not called String because that
+// signature would make Decoder look like a fmt.Stringer to every linter and
+// every caller reading it.
+func (d *Decoder) Text() string {
 	b := d.Bytes()
 	if b == nil {
 		return ""
