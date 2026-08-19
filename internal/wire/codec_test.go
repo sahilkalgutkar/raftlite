@@ -15,8 +15,8 @@ func TestPrimitiveRoundTrip(t *testing.T) {
 	e.Bool(false)
 	e.Bytes([]byte("payload"))
 	e.Bytes(nil)
-	e.String("hello")
-	e.String("")
+	e.Text("hello")
+	e.Text("")
 	if e.Len() == 0 {
 		t.Fatal("encoder wrote nothing")
 	}
@@ -43,10 +43,10 @@ func TestPrimitiveRoundTrip(t *testing.T) {
 	if got := d.Bytes(); got != nil {
 		t.Fatalf("empty bytes decoded to %v", got)
 	}
-	if got := d.String(); got != "hello" {
+	if got := d.Text(); got != "hello" {
 		t.Fatalf("string = %q", got)
 	}
-	if got := d.String(); got != "" {
+	if got := d.Text(); got != "" {
 		t.Fatalf("empty string = %q", got)
 	}
 	if !d.Done() {
@@ -83,7 +83,7 @@ func TestDecoderErrorsAreSticky(t *testing.T) {
 	// Every subsequent call is a no-op and the first error is preserved.
 	d.Byte()
 	d.Bytes()
-	d.String()
+	d.Text()
 	d.Bool()
 	d.Count(1)
 	if !errors.Is(d.Err(), ErrTruncated) {
