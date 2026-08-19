@@ -15,6 +15,10 @@ var (
 	// while a previous one is still uncommitted. Raft only stays safe if
 	// configurations change one server at a time.
 	ErrConfChangeInFlight = errors.New("raft: a configuration change is still in flight")
+	// ErrReadIndexUnavailable means a linearizable read was asked for before
+	// this leader had committed anything in its own term, so its commit index
+	// is not yet something it can vouch for.
+	ErrReadIndexUnavailable = errors.New("raft: no committed entry in the current term yet")
 	// ErrInvalidConfChange is returned for a membership edit that would leave
 	// the cluster in an unusable state, such as removing the last voter.
 	ErrInvalidConfChange = errors.New("raft: invalid configuration change")

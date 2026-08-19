@@ -41,6 +41,9 @@ func (n *Node) run() {
 
 		case p := <-n.propCh:
 			n.startProposal(p)
+
+		case r := <-n.readCh:
+			n.startRead(r)
 		}
 	}
 }
@@ -62,6 +65,18 @@ func (n *Node) startProposal(p *proposal) {
 	}
 	p.term = n.raft.Term()
 	n.waiters[index] = p
+}
+
+// startRead asks the algorithm to confirm this node still leads, and records
+// the client waiting on the answer.
+func (n *Node) startRead(r *readRequest) {
+	n.nextReadID++
+	id := n.nextReadID
+	if err := n.raft.ReadIndex(id); err != nil {
+		r.result <- err
+		return
+	}
+	n.reads[id] = &readWaiter{result: r.result}
 }
 
 // drainReady performs the work the algorithm has queued up. The order is a
@@ -87,6 +102,8 @@ func (n *Node) drainReady() error {
 			n.tr.Send(m)
 		}
 		n.applyCommitted(rd.CommittedEntries)
+		n.confirmReads(rd.ReadStates)
+		n.releaseReads()
 
 		n.reconcileMembership()
 		n.publishStatus()
@@ -140,16 +157,47 @@ func (n *Node) applyCommitted(entries []raft.Entry) {
 	}
 }
 
+// confirmReads records the index each confirmed read may be served at.
+func (n *Node) confirmReads(states []raft.ReadState) {
+	for _, rs := range states {
+		if w, ok := n.reads[rs.ID]; ok {
+			w.index = rs.Index
+			w.confirmed = true
+		}
+	}
+}
+
+// releaseReads wakes up reads whose index the state machine has now reached.
+func (n *Node) releaseReads() {
+	if len(n.reads) == 0 {
+		return
+	}
+	applied := n.raft.Log().Applied()
+	for id, w := range n.reads {
+		if w.confirmed && applied >= w.index {
+			w.result <- nil
+			delete(n.reads, id)
+		}
+	}
+}
+
 // failStaleWaiters releases clients still blocked on entries this node can no
 // longer commit, which is what happens the moment it stops being leader.
 // Leaving them to time out would be correct but needlessly slow.
 func (n *Node) failStaleWaiters(role raft.Role) {
-	if role == raft.Leader || len(n.waiters) == 0 {
+	if role == raft.Leader {
 		return
 	}
 	for idx, p := range n.waiters {
 		p.result <- proposalResult{err: ErrLeadershipLost}
 		delete(n.waiters, idx)
+	}
+	// A read confirmed by a node that has since been deposed is exactly the
+	// stale read ReadIndex exists to prevent, so these fail too and the client
+	// retries against whoever is actually leading.
+	for id, w := range n.reads {
+		w.result <- ErrLeadershipLost
+		delete(n.reads, id)
 	}
 }
 
@@ -217,6 +265,10 @@ func (n *Node) shutdown() {
 	for idx, p := range n.waiters {
 		p.result <- proposalResult{err: ErrStopped}
 		delete(n.waiters, idx)
+	}
+	for id, w := range n.reads {
+		w.result <- ErrStopped
+		delete(n.reads, id)
 	}
 	if err := n.tr.Close(); err != nil {
 		n.cfg.Logger.Warn("transport did not close cleanly", "id", uint64(n.cfg.ID), "err", err)

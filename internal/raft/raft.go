@@ -107,6 +107,11 @@ type Node struct {
 	// configurations one server apart.
 	pendingConfIndex uint64
 
+	// pendingReads are linearizable reads waiting on a heartbeat quorum;
+	// readStates are the ones that got it and are ready to be served.
+	pendingReads []*readRequest
+	readStates   []ReadState
+
 	rand   *rand.Rand
 	logger *slog.Logger
 }
@@ -221,6 +226,7 @@ func (n *Node) becomeFollower(term uint64, lead NodeID) {
 	n.role = Follower
 	n.lead = lead
 	n.progress = nil
+	n.dropPendingReads()
 	n.electionElapsed = 0
 	n.resetElectionTimeout()
 	n.logger.Debug("became follower", "id", uint64(n.id), "term", n.term, "leader", uint64(lead))
@@ -458,7 +464,9 @@ func (n *Node) handleHeartbeat(m Message) {
 	n.electionElapsed = 0
 	n.lead = m.From
 	n.commitFromLeader(m.Commit)
-	n.send(Message{Type: MsgHeartbeatResp, To: m.From})
+	// Echo the read identifier back untouched: the reply is the follower
+	// vouching that this node was still its leader.
+	n.send(Message{Type: MsgHeartbeatResp, To: m.From, ReadID: m.ReadID})
 }
 
 // Ready collects everything the runtime has to do on this node's behalf and
@@ -482,12 +490,22 @@ type Ready struct {
 	Messages []Message
 	// CommittedEntries are entries the state machine should now apply.
 	CommittedEntries []Entry
+	// ReadStates are linearizable reads that a quorum has now confirmed. Each
+	// may be served once the state machine has applied up to its index.
+	ReadStates []ReadState
+}
+
+// ReadState pairs a read request with the log index at which it may safely be
+// served.
+type ReadState struct {
+	ID    uint64
+	Index uint64
 }
 
 // IsEmpty reports whether there is nothing for the runtime to do.
 func (r Ready) IsEmpty() bool {
 	return r.HardState == nil && r.Snapshot == nil && len(r.Entries) == 0 &&
-		len(r.Messages) == 0 && len(r.CommittedEntries) == 0
+		len(r.Messages) == 0 && len(r.CommittedEntries) == 0 && len(r.ReadStates) == 0
 }
 
 // HasReady reports whether a call to Ready would return any work.
@@ -496,7 +514,8 @@ func (n *Node) HasReady() bool {
 		n.log.LastIndex() >= n.unstable ||
 		len(n.log.NextCommitted()) > 0 ||
 		!n.hardState().Equal(n.prevHS) ||
-		n.hasPendingSnapshot()
+		n.hasPendingSnapshot() ||
+		n.hasPendingReadStates()
 }
 
 // Ready drains the pending work. Everything it returns is owned by the caller.
@@ -519,6 +538,7 @@ func (n *Node) Ready() Ready {
 	}
 
 	rd.CommittedEntries = n.takeCommitted()
+	rd.ReadStates = n.takeReadStates()
 
 	rd.Messages = n.msgs
 	n.msgs = nil

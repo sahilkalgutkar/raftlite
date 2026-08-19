@@ -101,6 +101,20 @@ type proposalResult struct {
 	err error
 }
 
+// readRequest is a client asking for a linearizable read.
+type readRequest struct {
+	result chan error
+}
+
+// readWaiter is that request once the loop has taken it on: it needs a quorum
+// to confirm the leader, and then the state machine to catch up to the index
+// the leader named.
+type readWaiter struct {
+	index     uint64
+	confirmed bool
+	result    chan error
+}
+
 // Node is a running raftlite server.
 type Node struct {
 	cfg   Config
@@ -111,6 +125,7 @@ type Node struct {
 
 	recvCh chan raft.Message
 	propCh chan *proposal
+	readCh chan *readRequest
 	stopCh chan struct{}
 	doneCh chan struct{}
 
@@ -121,6 +136,10 @@ type Node struct {
 	// waiters maps a log index to the client blocked on it. Only the event
 	// loop touches it.
 	waiters map[uint64]*proposal
+	// reads maps a read identifier to the client blocked on it, and nextReadID
+	// hands out those identifiers. Also loop-only.
+	reads      map[uint64]*readWaiter
+	nextReadID uint64
 
 	knownConfig          raft.Config
 	appliedSinceSnapshot uint64
@@ -156,9 +175,11 @@ func Start(cfg Config) (*Node, error) {
 		kv:      kv,
 		recvCh:  make(chan raft.Message, 512),
 		propCh:  make(chan *proposal),
+		readCh:  make(chan *readRequest),
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
 		waiters: make(map[uint64]*proposal),
+		reads:   make(map[uint64]*readWaiter),
 	}
 
 	n.raft = raft.NewNode(raft.Options{
@@ -322,3 +343,45 @@ func (n *Node) RemoveMember(ctx context.Context, id raft.NodeID) error {
 
 // Members returns the cluster configuration as this node understands it.
 func (n *Node) Members() []raft.Member { return n.Status().Config.Members }
+
+// LinearizableRead blocks until this node can answer a read that is guaranteed
+// to reflect every write committed before the call began.
+//
+// It is not free -- it costs a heartbeat round trip -- but it is far cheaper
+// than replicating a log entry per read, and it is the only way to be sure the
+// answer is not coming from a leader that was deposed while it was not
+// looking.
+func (n *Node) LinearizableRead(ctx context.Context) error {
+	r := &readRequest{result: make(chan error, 1)}
+	select {
+	case n.readCh <- r:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-n.stopCh:
+		return ErrStopped
+	case <-n.doneCh:
+		return ErrStopped
+	}
+
+	select {
+	case err := <-r.result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-n.doneCh:
+		return ErrStopped
+	}
+}
+
+// Get reads a key. A linearizable read confirms leadership first; a stale one
+// answers straight from local state, which any node can do and which is
+// perfectly reasonable for a caller that does not need the newest value.
+func (n *Node) Get(ctx context.Context, key string, linearizable bool) (fsm.Value, bool, error) {
+	if linearizable {
+		if err := n.LinearizableRead(ctx); err != nil {
+			return fsm.Value{}, false, err
+		}
+	}
+	v, ok := n.kv.Get(key)
+	return v, ok, nil
+}

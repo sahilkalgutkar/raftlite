@@ -282,6 +282,9 @@ func (n *Node) handleHeartbeatResponse(m Message) {
 		return
 	}
 	p.RecentActive = true
+	if m.ReadID != 0 {
+		n.ackRead(m.ReadID, m.From)
+	}
 	if p.Match < n.log.LastIndex() {
 		n.sendAppend(m.From)
 	}
