@@ -1,0 +1,27 @@
+# Coverage is a floor, not a target: the number is there to stop a change from
+# quietly shipping untested, not to be optimised for its own sake.
+coverage:
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 2%
+    patch:
+      default:
+        target: 80%
+        threshold: 5%
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: true
+
+ignore:
+  # Both binaries are argument parsing and a call into a package that is
+  # tested directly. There is no logic in them to cover, and pretending
+  # otherwise by writing a test that shells out would measure nothing.
+  - "cmd/raftlited/main.go"
+  - "cmd/raftctl/main.go"
+  # Test-only scaffolding: the in-memory network exists to support the cluster
+  # tests and is exercised entirely by them.
+  - "internal/chaos/doc.go"

@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l ./cmd ./internal)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      # The race detector is not optional here. Almost every bug this project
+      # can have is a concurrency bug, and a green test run without it says
+      # very little.
+      - name: test
+        run: go test -race -count=1 -timeout 10m ./...
+
+      - name: coverage
+        run: go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out -timeout 10m ./...
+
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+
+      - uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+          fail_ci_if_error: false
+
+  chaos:
+    name: chaos suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      # The cluster failure tests get their own job and several runs. They are
+      # the ones that would catch a real safety bug, and a flake in them is a
+      # finding rather than an annoyance, so running them repeatedly is the
+      # point rather than a cost.
+      - name: chaos
+        run: go test -race -count=3 -timeout 20m -v ./internal/chaos/
+
+  docker:
+    name: docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build the image
+        run: docker build -t raftlite:ci .
+
+      - name: run a single node and talk to it
+        run: |
+          docker run -d --name raftlite-ci -p 8001:8001 raftlite:ci \
+            --id=1 --raft-addr=127.0.0.1:9001 --http-addr=0.0.0.0:8001 \
+            --data-dir=/data --bootstrap --log-level=warn
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8001/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS -X PUT --data 'from ci' http://127.0.0.1:8001/kv/greeting
+          echo
+          test "$(curl -fsS http://127.0.0.1:8001/kv/greeting)" = "from ci"
+          curl -fsS http://127.0.0.1:8001/metrics | grep raftlite_is_leader
+          docker rm -f raftlite-ci
