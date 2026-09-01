@@ -115,22 +115,42 @@ func (c *cluster) waitFor(what string, cond func() bool) {
 	c.t.Fatalf("timed out waiting for %s", what)
 }
 
-func put(t *testing.T, n *Node, key, value string) fsm.Result {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	res, err := n.Propose(ctx, fsm.Put(key, []byte(value)))
-	if err != nil {
-		t.Fatalf("put %s=%s: %v", key, value, err)
+// put writes a key through n and returns once it has committed, retrying
+// against whoever leads next if the cluster changes leader mid-write.
+//
+// ErrLeadershipLost is not a defect: a proposal accepted by a leader that is
+// deposed before the entry commits is an ordinary Raft outcome, and every
+// real client retries it — the HTTP API reports exactly this case as a 503
+// for the caller to repeat. Failing the test on the first one asserts
+// something Raft never promised, which is how this helper broke on a loaded
+// CI runner whose heartbeats slipped past a 40ms election timeout. The retry
+// is safe because a Put is idempotent: replaying one that did commit rewrites
+// the same key with the same bytes.
+func (c *cluster) put(n *Node, key, value string) fsm.Result {
+	c.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		res, err := n.Propose(ctx, fsm.Put(key, []byte(value)))
+		cancel()
+		if err == nil {
+			return res
+		}
+		if !errors.Is(err, ErrLeadershipLost) && !errors.Is(err, raft.ErrNotLeader) {
+			c.t.Fatalf("put %s=%s: %v", key, value, err)
+		}
+		if time.Now().After(deadline) {
+			c.t.Fatalf("put %s=%s: still %v after retrying for 10s", key, value, err)
+		}
+		n = c.leader()
 	}
-	return res
 }
 
 func TestSingleNodeAcceptsWrites(t *testing.T) {
 	c := startCluster(t, 1, nil)
 	leader := c.leader()
 
-	res := put(t, leader, "colour", "green")
+	res := c.put(leader, "colour", "green")
 	if res.Revision == 0 {
 		t.Fatalf("result = %+v", res)
 	}
@@ -151,7 +171,7 @@ func TestWritesReplicateToEveryNode(t *testing.T) {
 	leader := c.leader()
 
 	for i := 0; i < 20; i++ {
-		put(t, leader, fmt.Sprintf("key-%02d", i), fmt.Sprintf("value-%d", i))
+		c.put(leader, fmt.Sprintf("key-%02d", i), fmt.Sprintf("value-%d", i))
 	}
 
 	c.waitFor("every node to apply every write", func() bool {
@@ -191,7 +211,7 @@ func TestFollowersRefuseWrites(t *testing.T) {
 func TestClusterSurvivesLosingItsLeader(t *testing.T) {
 	c := startCluster(t, 3, nil)
 	old := c.leader()
-	put(t, old, "before", "the outage")
+	c.put(old, "before", "the outage")
 
 	// Cut the leader off entirely, the way a machine dying looks to everyone
 	// else, and let the survivors elect a replacement.
@@ -209,7 +229,7 @@ func TestClusterSurvivesLosingItsLeader(t *testing.T) {
 		return false
 	})
 
-	put(t, fresh, "after", "the failover")
+	c.put(fresh, "after", "the failover")
 	if v, ok := fresh.Store().Get("before"); !ok || string(v.Data) != "the outage" {
 		t.Fatalf("the new leader lost a committed write: %+v", v)
 	}
@@ -228,7 +248,7 @@ func TestClusterSurvivesLosingItsLeader(t *testing.T) {
 func TestAMinorityCannotCommit(t *testing.T) {
 	c := startCluster(t, 3, nil)
 	leader := c.leader()
-	put(t, leader, "committed", "yes")
+	c.put(leader, "committed", "yes")
 
 	// Strand the leader with no followers. It still thinks it is leader for a
 	// moment, but nothing it accepts can reach a quorum.
@@ -259,7 +279,7 @@ func TestStateSurvivesARestart(t *testing.T) {
 	c := startCluster(t, 1, nil)
 	leader := c.leader()
 	for i := 0; i < 10; i++ {
-		put(t, leader, fmt.Sprintf("key-%d", i), "value")
+		c.put(leader, fmt.Sprintf("key-%d", i), "value")
 	}
 	term := leader.Status().Term
 	if err := leader.Stop(); err != nil {
@@ -277,7 +297,7 @@ func TestStateSurvivesARestart(t *testing.T) {
 	if restarted.Status().Term < term {
 		t.Fatalf("term went backwards: %d -> %d", term, restarted.Status().Term)
 	}
-	put(t, restarted, "after-restart", "ok")
+	c.put(restarted, "after-restart", "ok")
 }
 
 func TestSnapshotsCompactTheLogAndSurviveRestart(t *testing.T) {
@@ -285,7 +305,7 @@ func TestSnapshotsCompactTheLogAndSurviveRestart(t *testing.T) {
 	leader := c.leader()
 
 	for i := 0; i < 60; i++ {
-		put(t, leader, fmt.Sprintf("key-%02d", i), fmt.Sprintf("value-%d", i))
+		c.put(leader, fmt.Sprintf("key-%02d", i), fmt.Sprintf("value-%d", i))
 	}
 	c.waitFor("the log to be compacted", func() bool { return leader.Status().Snapshot > 0 })
 
@@ -326,7 +346,7 @@ func TestALaggingNodeCatchesUpThroughASnapshot(t *testing.T) {
 	c.mesh.Isolate(lagging)
 
 	for i := 0; i < 60; i++ {
-		put(t, leader, fmt.Sprintf("key-%02d", i), "v")
+		c.put(leader, fmt.Sprintf("key-%02d", i), "v")
 	}
 	c.waitFor("the leader to compact", func() bool { return leader.Status().Snapshot > 0 })
 
@@ -339,7 +359,7 @@ func TestALaggingNodeCatchesUpThroughASnapshot(t *testing.T) {
 func TestMembershipChangesAtRuntime(t *testing.T) {
 	c := startCluster(t, 3, nil)
 	leader := c.leader()
-	put(t, leader, "existing", "data")
+	c.put(leader, "existing", "data")
 
 	// A fourth server joins as a learner: it replicates without being counted
 	// in any quorum, so it cannot stall writes while it catches up.
