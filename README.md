@@ -122,19 +122,21 @@ learner. Promote it once it has caught up:
 
 ## Using it
 
-With `raftctl`:
+With `raftctl`, which `make build` leaves in `./bin` alongside the daemon
+(`go install ./cmd/raftctl` instead if you would rather have it on your
+`PATH` and drop the prefix):
 
 ```bash
 EP=127.0.0.1:8001,127.0.0.1:8002,127.0.0.1:8003
 
-raftctl --endpoints $EP put greeting "hello raftlite"
-raftctl --endpoints $EP get greeting
-raftctl --endpoints $EP --stale get greeting       # any node, possibly behind
-raftctl --endpoints $EP --absent put lock held-by-a  # only if absent
-raftctl --endpoints $EP --prev held-by-a put lock held-by-b
-raftctl --endpoints $EP status
-raftctl --endpoints $EP members
-raftctl --endpoints $EP del greeting
+./bin/raftctl --endpoints $EP put greeting "hello raftlite"
+./bin/raftctl --endpoints $EP get greeting
+./bin/raftctl --endpoints $EP --stale get greeting       # any node, possibly behind
+./bin/raftctl --endpoints $EP --absent put lock held-by-a  # only if absent
+./bin/raftctl --endpoints $EP --prev held-by-a put lock held-by-b
+./bin/raftctl --endpoints $EP status
+./bin/raftctl --endpoints $EP members
+./bin/raftctl --endpoints $EP del greeting
 ```
 
 Or with curl, against any node — a follower answers `307` with the leader's
