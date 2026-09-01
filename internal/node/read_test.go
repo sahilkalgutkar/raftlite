@@ -13,7 +13,7 @@ import (
 func TestLinearizableReadSeesTheLatestWrite(t *testing.T) {
 	c := startCluster(t, 3, nil)
 	leader := c.leader()
-	put(t, leader, "counter", "1")
+	c.put(leader, "counter", "1")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -23,7 +23,7 @@ func TestLinearizableReadSeesTheLatestWrite(t *testing.T) {
 		t.Fatalf("read = %+v, %v, %v", v, ok, err)
 	}
 
-	put(t, leader, "counter", "2")
+	c.put(leader, "counter", "2")
 	v, _, err = leader.Get(ctx, "counter", true)
 	if err != nil || string(v.Data) != "2" {
 		t.Fatalf("read after write = %+v, %v", v, err)
@@ -33,7 +33,7 @@ func TestLinearizableReadSeesTheLatestWrite(t *testing.T) {
 func TestLinearizableReadIsRefusedOnAFollower(t *testing.T) {
 	c := startCluster(t, 3, nil)
 	leader := c.leader()
-	put(t, leader, "k", "v")
+	c.put(leader, "k", "v")
 
 	for _, id := range c.ids {
 		n := c.nodes[id]
@@ -70,7 +70,7 @@ func TestAPartitionedLeaderRefusesLinearizableReads(t *testing.T) {
 	// this test shows it doing exactly that.
 	c := startCluster(t, 3, nil)
 	old := c.leader()
-	put(t, old, "leader", "first")
+	c.put(old, "leader", "first")
 
 	c.mesh.Isolate(old.Status().ID)
 
@@ -85,7 +85,7 @@ func TestAPartitionedLeaderRefusesLinearizableReads(t *testing.T) {
 		}
 		return false
 	})
-	put(t, fresh, "leader", "second")
+	c.put(fresh, "leader", "second")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -114,7 +114,7 @@ func TestAPartitionedLeaderRefusesLinearizableReads(t *testing.T) {
 func TestManyConcurrentLinearizableReads(t *testing.T) {
 	c := startCluster(t, 3, nil)
 	leader := c.leader()
-	put(t, leader, "k", "v")
+	c.put(leader, "k", "v")
 
 	errs := make(chan error, 20)
 	for i := 0; i < 20; i++ {

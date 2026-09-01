@@ -22,7 +22,7 @@ func scrape(t *testing.T, n *Node) string {
 func TestNodeExportsItsState(t *testing.T) {
 	c := startCluster(t, 3, nil)
 	leader := c.leader()
-	put(t, leader, "k", "v")
+	c.put(leader, "k", "v")
 
 	out := scrape(t, leader)
 	for _, want := range []string{
@@ -69,7 +69,7 @@ func TestGaugesTrackTheNodeWithoutBeingUpdated(t *testing.T) {
 		t.Fatalf("initial keys gauge:\n%s", before)
 	}
 	for i := 0; i < 5; i++ {
-		put(t, leader, string(rune('a'+i)), "v")
+		c.put(leader, string(rune('a'+i)), "v")
 	}
 	after := scrape(t, leader)
 	if !strings.Contains(after, "raftlite_keys{node=\"node-1\"} 5") {
@@ -80,7 +80,7 @@ func TestGaugesTrackTheNodeWithoutBeingUpdated(t *testing.T) {
 func TestCountersRecordFailuresToo(t *testing.T) {
 	c := startCluster(t, 3, nil)
 	leader := c.leader()
-	put(t, leader, "k", "v")
+	c.put(leader, "k", "v")
 
 	// A follower refusing a write is a failed proposal on that node.
 	var follower *Node
