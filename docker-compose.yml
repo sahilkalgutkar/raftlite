@@ -22,7 +22,7 @@ services:
       - --bootstrap
       - --log-level=info
     ports:
-      - "8001:8001"
+      - "${NODE1_HOST_PORT:-8001}:8001"
     volumes:
       - raftlite-1-data:/data
     networks: [raftlite]
@@ -40,7 +40,7 @@ services:
       - --peer=3,raftlite-3:9001,raftlite-3:8001
       - --log-level=info
     ports:
-      - "8002:8001"
+      - "${NODE2_HOST_PORT:-8002}:8001"
     volumes:
       - raftlite-2-data:/data
     networks: [raftlite]
@@ -58,7 +58,7 @@ services:
       - --peer=3,raftlite-3:9001,raftlite-3:8001
       - --log-level=info
     ports:
-      - "8003:8001"
+      - "${NODE3_HOST_PORT:-8003}:8001"
     volumes:
       - raftlite-3-data:/data
     networks: [raftlite]
