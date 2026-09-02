@@ -10,7 +10,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-ENDPOINTS="127.0.0.1:8001,127.0.0.1:8002,127.0.0.1:8003"
+# Must match the host ports docker-compose.yml publishes, defaults included, so
+# that overriding one moves the compose mapping and this script together.
+NODE1_HOST_PORT=${NODE1_HOST_PORT:-8001}
+NODE2_HOST_PORT=${NODE2_HOST_PORT:-8002}
+NODE3_HOST_PORT=${NODE3_HOST_PORT:-8003}
+PORTS="$NODE1_HOST_PORT $NODE2_HOST_PORT $NODE3_HOST_PORT"
+ENDPOINTS="127.0.0.1:$NODE1_HOST_PORT,127.0.0.1:$NODE2_HOST_PORT,127.0.0.1:$NODE3_HOST_PORT"
 RAFTCTL=${RAFTCTL:-./bin/raftctl}
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -37,7 +43,7 @@ echo "a second holder should now be refused:"
 "$RAFTCTL" --endpoints "$ENDPOINTS" --absent put lock held-by-b || true
 
 leader_container() {
-  for port in 8001 8002 8003; do
+  for port in $PORTS; do
     role=$(curl -fsS "http://127.0.0.1:${port}/status" | sed -n 's/.*"role":"\([a-z]*\)".*/\1/p')
     if [ "$role" = "leader" ]; then
       id=$(curl -fsS "http://127.0.0.1:${port}/status" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
