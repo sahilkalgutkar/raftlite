@@ -70,6 +70,18 @@ The demo brings up three nodes, writes some keys, takes a lock with
 compare-and-swap, kills the leader, watches a new one take over with the
 committed writes intact, and brings the old leader back to rejoin.
 
+The three host ports are overridable via `NODE1_HOST_PORT`, `NODE2_HOST_PORT`
+and `NODE3_HOST_PORT` (see `.env.example`). `scripts/demo.sh` reads the same
+three variables with the same defaults, so one override moves the compose
+mapping and the demo together:
+
+```bash
+NODE1_HOST_PORT=8101 NODE2_HOST_PORT=8102 NODE3_HOST_PORT=8103 ./scripts/demo.sh
+```
+
+Only the host side moves — inside the compose network every node serves HTTP on
+8001 and speaks Raft on 9001 regardless.
+
 ### From source
 
 ```bash
