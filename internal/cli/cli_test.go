@@ -24,25 +24,64 @@ type realCluster struct {
 	httpAddrs []string
 }
 
+// freeAddrs picks n loopback addresses that are free at the same moment.
+//
+// Asking the kernel for port 0 and closing the listener leaves a window where
+// anything on the machine can take that port before the server binds it, and
+// closing each probe before opening the next one lets a cluster collide with
+// itself. Holding every probe open until all n are chosen closes that second
+// case; the first is unavoidable here, so startCluster retries on it.
 func freeAddr(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
+	return freeAddrs(t, 1)[0]
+}
+
+func freeAddrs(t *testing.T, n int) []string {
+	t.Helper()
+	lns := make([]net.Listener, 0, n)
+	addrs := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			for _, open := range lns {
+				_ = open.Close()
+			}
+			t.Fatalf("Listen: %v", err)
+		}
+		lns = append(lns, ln)
+		addrs = append(addrs, ln.Addr().String())
 	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
+	for _, ln := range lns {
+		_ = ln.Close()
+	}
+	return addrs
 }
 
 func startCluster(t *testing.T, size int) *realCluster {
 	t.Helper()
-	raftAddrs := make([]string, size)
-	httpAddrs := make([]string, size)
+	// A port can still be taken between the probe closing and the server
+	// binding, which surfaces as "address already in use" and used to fail the
+	// run outright. Nothing about that is the code under test, so pick a fresh
+	// set and try again.
+	for attempt := 1; ; attempt++ {
+		c, err := tryStartCluster(t, size)
+		if err == nil {
+			return c
+		}
+		if attempt == 5 {
+			t.Fatalf("start cluster after %d attempts: %v", attempt, err)
+		}
+		t.Logf("cluster start attempt %d lost a port, retrying: %v", attempt, err)
+	}
+}
+
+func tryStartCluster(t *testing.T, size int) (*realCluster, error) {
+	t.Helper()
+	addrs := freeAddrs(t, size*2)
+	raftAddrs := addrs[:size]
+	httpAddrs := addrs[size:]
 	var peers []raft.Member
 	for i := 0; i < size; i++ {
-		raftAddrs[i] = freeAddr(t)
-		httpAddrs[i] = freeAddr(t)
 		peers = append(peers, raft.Member{
 			ID: raft.NodeID(i + 1), Addr: raftAddrs[i], ClientAddr: httpAddrs[i],
 		})
@@ -66,7 +105,12 @@ func startCluster(t *testing.T, size int) *realCluster {
 			Logger:            slog.New(slog.DiscardHandler),
 		})
 		if err != nil {
-			t.Fatalf("start node %d: %v", i+1, err)
+			// Tear down whatever did come up before reporting, so a retry does
+			// not leave nodes holding ports.
+			for _, started := range c.instances {
+				_ = started.Shutdown(t.Context())
+			}
+			return nil, fmt.Errorf("start node %d: %w", i+1, err)
 		}
 		c.instances = append(c.instances, inst)
 	}
@@ -76,7 +120,7 @@ func startCluster(t *testing.T, size int) *realCluster {
 		}
 	})
 	c.waitForLeader()
-	return c
+	return c, nil
 }
 
 func (c *realCluster) waitForLeader() {
