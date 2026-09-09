@@ -9,22 +9,51 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+)
+
+// issuedAddrs records every address freeAddr has handed out in this test
+// binary, so two calls cannot name the same port.
+var (
+	issuedMu    sync.Mutex
+	issuedAddrs = map[string]bool{}
 )
 
 // freeAddr reserves a loopback port and immediately releases it. Peers have to
 // be configured with real addresses before the servers exist, so the ports
 // cannot simply be zero.
+//
+// The probe has to be closed before a server can bind the port, which leaves a
+// window where something else can take it. The kernel will not hand out a port
+// that is still open, but it happily reuses one this function closed a moment
+// ago -- so a caller asking for six addresses in a row could be given the same
+// one twice and fail with "address already in use". Addresses already issued
+// are therefore skipped.
 func freeAddr(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
+	for attempt := 0; attempt < 50; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("Listen: %v", err)
+		}
+		addr := ln.Addr().String()
+		_ = ln.Close()
+
+		issuedMu.Lock()
+		fresh := !issuedAddrs[addr]
+		if fresh {
+			issuedAddrs[addr] = true
+		}
+		issuedMu.Unlock()
+
+		if fresh {
+			return addr
+		}
 	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
+	t.Fatal("could not find an unused loopback port")
+	return ""
 }
 
 func quietLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }

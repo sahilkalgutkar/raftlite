@@ -8,6 +8,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,13 @@ type realCluster struct {
 // closing each probe before opening the next one lets a cluster collide with
 // itself. Holding every probe open until all n are chosen closes that second
 // case; the first is unavoidable here, so startCluster retries on it.
+// issuedAddrs records every address handed out in this test binary, so two
+// clusters cannot be pointed at the same port.
+var (
+	issuedMu    sync.Mutex
+	issuedAddrs = map[string]bool{}
+)
+
 func freeAddr(t *testing.T) string {
 	t.Helper()
 	return freeAddrs(t, 1)[0]
@@ -40,7 +48,7 @@ func freeAddrs(t *testing.T, n int) []string {
 	t.Helper()
 	lns := make([]net.Listener, 0, n)
 	addrs := make([]string, 0, n)
-	for i := 0; i < n; i++ {
+	for len(addrs) < n {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			for _, open := range lns {
@@ -49,7 +57,16 @@ func freeAddrs(t *testing.T, n int) []string {
 			t.Fatalf("Listen: %v", err)
 		}
 		lns = append(lns, ln)
-		addrs = append(addrs, ln.Addr().String())
+		addr := ln.Addr().String()
+
+		// Skip anything a previous cluster in this binary already used; the
+		// kernel reuses recently released ports.
+		issuedMu.Lock()
+		if !issuedAddrs[addr] {
+			issuedAddrs[addr] = true
+			addrs = append(addrs, addr)
+		}
+		issuedMu.Unlock()
 	}
 	for _, ln := range lns {
 		_ = ln.Close()
