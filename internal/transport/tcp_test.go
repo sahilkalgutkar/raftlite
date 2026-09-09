@@ -138,16 +138,61 @@ func TestManyMessagesArriveInOrder(t *testing.T) {
 	}
 }
 
-func TestPeerThatComesBackStartsReceivingAgain(t *testing.T) {
-	a, _ := startTransport(t, 1)
+// issuedAddrs records every address reserveAddr has handed out in this test
+// binary, so nothing else here can be pointed at one still being waited on.
+var (
+	issuedMu    sync.Mutex
+	issuedAddrs = map[string]bool{}
+)
 
-	// Reserve a port, then close the listener so nothing is there yet.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
+// reserveAddr picks a loopback address and releases it, so the caller can bind
+// it later. The kernel reuses a port released a moment ago, so an address
+// already handed out in this binary is skipped.
+func reserveAddr(t *testing.T) string {
+	t.Helper()
+	for attempt := 0; attempt < 50; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("Listen: %v", err)
+		}
+		addr := ln.Addr().String()
+		_ = ln.Close()
+
+		issuedMu.Lock()
+		fresh := !issuedAddrs[addr]
+		if fresh {
+			issuedAddrs[addr] = true
+		}
+		issuedMu.Unlock()
+
+		if fresh {
+			return addr
+		}
 	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	t.Fatal("could not reserve an unused loopback port")
+	return ""
+}
+
+func TestPeerThatComesBackStartsReceivingAgain(t *testing.T) {
+	// The port has to be free while the sender fails to dial it and taken
+	// afterwards, so unlike everywhere else here the listener genuinely has to
+	// be closed and rebound. That leaves a window -- widened by the wait for a
+	// dial failure -- in which something can take the port, so a lost race
+	// starts over on a fresh one rather than failing the test.
+	for attempt := 1; ; attempt++ {
+		if done := peerComesBackOnce(t, attempt == 5); done {
+			return
+		}
+		t.Logf("reserved port was taken before the peer could bind it, retrying (attempt %d)", attempt)
+	}
+}
+
+// peerComesBackOnce returns false if it lost the port race and should be
+// retried; lastAttempt makes that failure fatal instead.
+func peerComesBackOnce(t *testing.T, lastAttempt bool) bool {
+	t.Helper()
+	a, _ := startTransport(t, 1)
+	addr := reserveAddr(t)
 
 	a.SetPeers([]raft.Member{{ID: 1, Addr: a.Addr()}, {ID: 2, Addr: addr}})
 	a.Send(raft.Message{Type: raft.MsgHeartbeatReq, From: 1, To: 2, Term: 1})
@@ -157,7 +202,10 @@ func TestPeerThatComesBackStartsReceivingAgain(t *testing.T) {
 	box := &inbox{}
 	b, err := Listen(Options{ID: 2, Addr: addr}, box.handler())
 	if err != nil {
-		t.Fatalf("Listen on the reserved port: %v", err)
+		if lastAttempt {
+			t.Fatalf("Listen on the reserved port: %v", err)
+		}
+		return false
 	}
 	defer b.Close()
 
@@ -165,6 +213,7 @@ func TestPeerThatComesBackStartsReceivingAgain(t *testing.T) {
 		a.Send(raft.Message{Type: raft.MsgHeartbeatReq, From: 1, To: 2, Term: 2})
 		return box.len() > 0
 	})
+	return true
 }
 
 func TestAFullQueueDropsRatherThanBlocking(t *testing.T) {
