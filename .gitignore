@@ -17,3 +17,7 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+
+# Local port overrides, copied from .env.example. The example is tracked; the
+# copy is per-machine.
+/.env
